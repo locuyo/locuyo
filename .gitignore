@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# Personal data: never commit recordings or session logs
+sessions/
+recordings/
+*.m4a
+*.wav
+*.mp3
+*.ogg
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+

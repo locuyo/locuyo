@@ -1,0 +1,93 @@
+name: terraform
+
+# Runs only when the application infrastructure changes. The OIDC bootstrap in
+# terraform/oidc/ is deliberately NOT deployed by this pipeline: the pipeline
+# must not be able to modify its own trust or permissions.
+on:
+  pull_request:
+    paths: ["terraform/app/**"]
+  push:
+    branches: [main]
+    paths: ["terraform/app/**"]
+
+permissions:
+  contents: read
+
+env:
+  TF_DIR: terraform/app
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required to request the OIDC token
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/locuyo-gha-plan
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Format check
+        run: terraform -chdir=$TF_DIR fmt -check -recursive
+
+      - name: Init
+        run: terraform -chdir=$TF_DIR init -input=false
+
+      - name: Validate
+        run: terraform -chdir=$TF_DIR validate
+
+      - name: Plan
+        run: terraform -chdir=$TF_DIR plan -input=false -lock-timeout=60s -out=tfplan
+
+      - name: Plan summary
+        run: |
+          {
+            echo '### Terraform plan'
+            echo '```'
+            terraform -chdir=$TF_DIR show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: tfplan
+          path: ${{ env.TF_DIR }}/tfplan
+          retention-days: 1
+
+  deploy:
+    # Only on main, and only after you approve in the "production" environment.
+    # The environment name is what the deploy role's trust policy matches on.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/locuyo-gha-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_DIR }}
+
+      - name: Init
+        run: terraform -chdir=$TF_DIR init -input=false
+
+      - name: Apply the reviewed plan
+        run: terraform -chdir=$TF_DIR apply -input=false -lock-timeout=60s tfplan
